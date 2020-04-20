@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 
 import ReactHtmlParser from 'react-html-parser';
 
-import { Button, Grid, Link, TextField } from '@material-ui/core';
+import { Button, Grid, LinearProgress, Link, TextField } from '@material-ui/core';
 import { makeStyles, withStyles } from '@material-ui/styles';
 
 import ReactQuill, { Quill } from 'react-quill';
@@ -11,7 +11,9 @@ import ImageResize from 'quill-image-resize-module-react';
 import { ImageDrop } from 'quill-image-drop-module';
 import { ImageUpload } from 'quill-image-upload';
 
-import { Link as ReactLink, useHistory, useLocation, BrowserRouter } from 'react-router-dom';
+import { useHistory } from 'react-router-dom';
+
+import BackdropProgress from '../components/BackdropProgress';
 
 import 'react-quill/dist/quill.snow.css';
 
@@ -61,6 +63,21 @@ const EdAttachFilesTextField = withStyles((theme) => ({
     },
 }))(TextField);
 
+const UpperProgressBar = withStyles((theme) => ({
+    root: {
+        backgroundColor: '#ffffff00',
+        position: 'fixed',
+        left: 0,
+        top: 0,
+        width: '100%',
+        zIndex: 99999,
+
+        '& .MuiLinearProgress-barColorPrimary': {
+            backgroundColor: '#ff006a',
+        },
+    },
+}))(LinearProgress);
+
 function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds, quillFormats, quillModules, redirectAfter, children }) {
     const classes = useStyles();
     const history = useHistory();
@@ -75,6 +92,9 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
     const [filesBefore, setFilesBefore] = useState([]);
     const [isFilesUpdated, setFilesUpdated] = useState(false);
     const [originalWriter, setOriginalWriter] = useState('');
+
+    const [upperProgress, setUpperProgress] = useState(0);
+    const [backdropProgress, openBackdropProgress] = useState(false);
 
     articleNo = articleNo.replace(redirectAfter, '');
     articleNo = articleNo.replace('/', '');
@@ -94,11 +114,14 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
     quillModules.imageUpload.customUploader = (file, returnTo) => {
         const timeserial = new Date().getTime();
         const imageUploadTask = storage.ref(`images/${timeserial}/${file.name}`).put(file);
+        setContents(quillElem.current.getEditorContents());
         imageUploadTask.on(
             firebase.storage.TaskEvent.STATE_CHANGED,
             (snapshot) => {
                 const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                openBackdropProgress(true);
                 // console.log(`Progress: ${progress}%`);
+                setUpperProgress(progress);
                 if (snapshot.state === firebase.storage.TaskState.RUNNING) {
                     // console.log('image uploading...');
                 }
@@ -109,6 +132,8 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
             },
             async () => {
                 const downloadURL = await imageUploadTask.snapshot.ref.getDownloadURL();
+                setUpperProgress(0);
+                openBackdropProgress(false);
                 returnTo(downloadURL);
             },
         );
@@ -117,6 +142,7 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
     const onTitleChange = (e) => {
         // console.log(e.target.value);
         setTitle(e.target.value);
+        setContents(quillElem.current.getEditorContents());
         if (titleBefore !== title) {
             // console.warn('title is updated');
             setTitleUpdated(true);
@@ -187,6 +213,8 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
 
                 const newContents = quillElem.current.getEditorContents();
 
+                openBackdropProgress(true);
+
                 database.ref(articleRef + newArticleNum).set(
                     {
                         title: title,
@@ -200,16 +228,20 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                         if (err) {
                             alert('글 업로드 중 오류가 발생했습니다.\n' + err);
                             console.err(err);
+                            openBackdropProgress(false);
+                            setUpperProgress(0);
                         } else {
                             console.log('글 번호 ' + newArticleNum + ' 가 새롭게 등록됨');
                             const promises = [];
+                            let progressIdx = 0;
                             files.forEach((file) => {
                                 const uploadTask = firebase.storage().ref().child(`attachments/${newArticleNum}/${file.name}`).put(file);
                                 promises.push(uploadTask);
                                 uploadTask.on(
                                     firebase.storage.TaskEvent.STATE_CHANGED,
                                     (snapshot) => {
-                                        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                                        const progress = snapshot.bytesTransferred / snapshot.totalBytes;
+                                        setUpperProgress(((progress + progressIdx) / files.length) * 100);
                                         // console.log(`Progress: ${progress}%`);
                                         if (snapshot.state === firebase.storage.TaskState.RUNNING) {
                                             // console.log(file.name + ' uploading...');
@@ -219,8 +251,9 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                                         alert(`첨부 파일 ${file.name} 을(를) 업로드 하는 중 에러가 발생했습니다.\n` + err.code);
                                         console.log(err.code);
                                     },
-                                    async () => {
-                                        const downloadURL = await uploadTask.snapshot.ref.getDownloadURL();
+                                    () => {
+                                        // const downloadURL = await uploadTask.snapshot.ref.getDownloadURL();
+                                        progressIdx++;
                                     },
                                 );
                             });
@@ -248,15 +281,21 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                                                 .then(() => {
                                                     console.log('글 번호 ' + newArticleNum + ' 의 첨부 파일이 추가됨');
                                                     // alert('새 글이 등록되었습니다.');
+                                                    openBackdropProgress(false);
+                                                    setUpperProgress(0);
                                                     window.location.replace(newArticleNum);
                                                 })
                                                 .catch((err) => {
+                                                    openBackdropProgress(false);
+                                                    setUpperProgress(0);
                                                     alert('글에 첨부 파일을 등록하는 중 에러가 발생했습니다.\n' + err.code);
                                                     console.log(err.code);
                                                 });
                                         });
                                 })
                                 .catch((err) => {
+                                    openBackdropProgress(false);
+                                    setUpperProgress(0);
                                     alert('첨부 파일 업로드에 실패했습니다.');
                                     console.log(err.code);
                                 });
@@ -295,6 +334,8 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                 if (isTitleUpdated) updateData.title = title;
                 if (contents !== newContents) updateData.contents = newContents;
 
+                openBackdropProgress(true);
+
                 database
                     .ref(articleRef + articleNo)
                     .update(updateData)
@@ -302,6 +343,7 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                         if (files !== filesBefore) {
                             console.log('첨부 파일 삭제 후 재 업로드 합니다.');
                             const delPromises = [];
+                            let progressIdx = 0;
                             storage
                                 .ref()
                                 .child(`attachments/${articleNo}`)
@@ -326,6 +368,7 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                                                     firebase.storage.TaskEvent.STATE_CHANGED,
                                                     (snapshot) => {
                                                         const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                                                        setUpperProgress(((progress + progressIdx) / files.length) * 100);
                                                         // console.log(`Progress: ${progress}%`);
                                                         if (snapshot.state === firebase.storage.TaskState.RUNNING) {
                                                             // console.log(file.name + ' uploading...');
@@ -338,8 +381,9 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                                                         );
                                                         console.log(err.code);
                                                     },
-                                                    async () => {
-                                                        const downloadURL = await uploadTask.snapshot.ref.getDownloadURL();
+                                                    () => {
+                                                        // const downloadURL = await uploadTask.snapshot.ref.getDownloadURL();
+                                                        progressIdx++;
                                                     },
                                                 );
                                             });
@@ -366,6 +410,8 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                                                                 .update(updateFileData)
                                                                 .then(() => {
                                                                     console.log('글 번호 ' + articleNo + ' 의 첨부 파일이 수정됨');
+                                                                    openBackdropProgress(false);
+                                                                    setUpperProgress(0);
                                                                     alert('글이 수정되었습니다.');
                                                                     setTitle(title);
                                                                     setTitleBefore(title);
@@ -376,22 +422,30 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                                                                     setEditMode(false);
                                                                 })
                                                                 .catch((err) => {
+                                                                    openBackdropProgress(false);
+                                                                    setUpperProgress(0);
                                                                     alert('글에 첨부 파일을 수정하는 중 에러가 발생했습니다.\n' + err.code);
                                                                     console.log(err.code);
                                                                 });
                                                         });
                                                 })
                                                 .catch((err) => {
+                                                    openBackdropProgress(false);
+                                                    setUpperProgress(0);
                                                     alert('첨부 파일 업로드에 실패했습니다.');
                                                     console.log(err.code);
                                                 });
                                         })
                                         .catch((err) => {
+                                            openBackdropProgress(false);
+                                            setUpperProgress(0);
                                             alert('첨부 파일 삭제에 실패했습니다.');
                                             console.log(err.code);
                                         });
                                 });
                         } else {
+                            openBackdropProgress(false);
+                            setUpperProgress(0);
                             alert('글이 수정되었습니다.');
                             setTitle(title);
                             setTitleBefore(title);
@@ -401,6 +455,8 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                         }
                     })
                     .catch((err) => {
+                        openBackdropProgress(false);
+                        setUpperProgress(0);
                         console.log(err);
                     });
             }
@@ -438,14 +494,18 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                 if (articleWriter === originalWriter) {
                     const conf = window.confirm('정말로 이 글을 삭제하시겠습니까?');
                     if (conf) {
+                        openBackdropProgress(true);
                         database
                             .ref(articleRef + articleNo)
                             .set(null)
                             .then((snapshot) => {
+                                openBackdropProgress(false);
                                 alert('글이 삭제되었습니다.');
                                 history.replace(redirectAfter);
                             })
                             .catch((err) => {
+                                openBackdropProgress(false);
+                                setUpperProgress(0);
                                 alert('삭제 중 에러가 발생했습니다.\n' + err);
                                 console.error(err);
                             });
@@ -502,11 +562,14 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
     useEffect(() => {
         // 에디트모드 체크해서 거짓이면 글 번호로 조회해서 초기 세팅
         if (!editMode && articleNo !== 'writeNew' && articleNo !== '') {
+            openBackdropProgress(true);
             database
                 .ref(articleRef + articleNo)
                 .once('value')
                 .then((snapshot) => {
                     const datas = snapshot.val();
+                    openBackdropProgress(false);
+                    setUpperProgress(0);
                     if (!datas) {
                         alert('존재하지 않는 글입니다.');
                         history.replace(redirectAfter);
@@ -528,6 +591,8 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                     setOriginalWriter(oWriter);
                 })
                 .catch((err) => {
+                    openBackdropProgress(false);
+                    setUpperProgress(0);
                     alert('글을 불러오는 중 에러가 발생했습니다.\n', err);
                     console.error(err);
                 });
@@ -540,6 +605,8 @@ function Freeboard({ firebase, articleNo, articleRef, articleWriter, quillBounds
                 children
             ) : (
                 <div className={classes.root}>
+                    <UpperProgressBar variant="determinate" value={upperProgress} />
+                    <BackdropProgress open={backdropProgress} />
                     <div className={classes.titleContainer}>
                         {editMode ? (
                             <EdTitle
